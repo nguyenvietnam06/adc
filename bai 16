@@ -1,0 +1,219 @@
+#include "main.h"
+#include "stm32f1xx_hal.h"
+#include <stdio.h>
+#include <string.h>
+
+/* ---- LCD pins on PA1..PA6 ---- */
+#define RS_Pin   GPIO_PIN_1
+#define RS_Port  GPIOA
+#define EN_Pin   GPIO_PIN_2
+#define EN_Port  GPIOA
+#define D4_Pin   GPIO_PIN_3
+#define D4_Port  GPIOA
+#define D5_Pin   GPIO_PIN_4
+#define D5_Port  GPIOA
+#define D6_Pin   GPIO_PIN_5
+#define D6_Port  GPIOA
+#define D7_Pin   GPIO_PIN_6
+#define D7_Port  GPIOA
+
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
+#define VREF 3.3f
+#define NUM_CHANNELS 2
+
+uint32_t adc_buffer[NUM_CHANNELS]; // 2 kênh: PA0 + PB0
+
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
+static void MX_ADC1_Init(void);
+
+/* ---- LCD Functions ---- */
+void LCD_Init(void);
+void LCD_SendCmd(char cmd);
+void LCD_SendData(char data);
+void LCD_SendString(char *str);
+void LCD_Clear(void);
+void LCD_SetCursor(int row, int col);
+void LCD_Enable(void);
+
+int main(void)
+{
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_DMA_Init();
+    MX_ADC1_Init();
+
+    LCD_Init();
+    LCD_Clear();
+
+    char buf[17];
+    float tempC, voltage_vr;
+
+    /* B?t d?u ADC v?i DMA */
+    HAL_ADC_Start_DMA(&hadc1, adc_buffer, NUM_CHANNELS);
+
+    while(1)
+    {
+        // LM35 trên PA0
+        tempC = (adc_buffer[0] * VREF / 4095.0f) * 100.0f;
+
+        // Bi?n tr? trên PB0
+        voltage_vr = adc_buffer[1] * VREF / 4095.0f;
+
+        // Hi?n th? LCD
+        LCD_Clear();
+        LCD_SetCursor(0,0);
+        sprintf(buf,"Temp:%5.1fC", tempC);
+        LCD_SendString(buf);
+
+        LCD_SetCursor(1,0);
+        sprintf(buf,"Vr:%4lu %.2fV", (unsigned long)adc_buffer[1], voltage_vr);
+        LCD_SendString(buf);
+
+        HAL_Delay(500);
+    }
+}
+
+/* ---------------- LCD ---------------- */
+void LCD_Enable(void)
+{
+    HAL_GPIO_WritePin(EN_Port, EN_Pin, GPIO_PIN_SET);
+    HAL_Delay(1);
+    HAL_GPIO_WritePin(EN_Port, EN_Pin, GPIO_PIN_RESET);
+    HAL_Delay(1);
+}
+
+void LCD_SendCmd(char cmd)
+{
+    HAL_GPIO_WritePin(RS_Port, RS_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D4_Port, D4_Pin, (cmd>>4)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D5_Port, D5_Pin, (cmd>>5)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D6_Port, D6_Pin, (cmd>>6)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D7_Port, D7_Pin, (cmd>>7)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    LCD_Enable();
+    HAL_GPIO_WritePin(D4_Port, D4_Pin, cmd&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D5_Port, D5_Pin, (cmd>>1)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D6_Port, D6_Pin, (cmd>>2)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D7_Port, D7_Pin, (cmd>>3)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    LCD_Enable();
+}
+
+void LCD_SendData(char data)
+{
+    HAL_GPIO_WritePin(RS_Port, RS_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(D4_Port, D4_Pin, (data>>4)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D5_Port, D5_Pin, (data>>5)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D6_Port, D6_Pin, (data>>6)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D7_Port, D7_Pin, (data>>7)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    LCD_Enable();
+    HAL_GPIO_WritePin(D4_Port, D4_Pin, data&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D5_Port, D5_Pin, (data>>1)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D6_Port, D6_Pin, (data>>2)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(D7_Port, D7_Pin, (data>>3)&0x01 ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    LCD_Enable();
+}
+
+void LCD_SendString(char *str){ while(*str) LCD_SendData(*str++); }
+void LCD_Clear(void){ LCD_SendCmd(0x01); HAL_Delay(2); }
+void LCD_SetCursor(int row, int col){ LCD_SendCmd((row==0?0x80:0xC0)+col); }
+void LCD_Init(void)
+{
+    HAL_Delay(50);
+    LCD_SendCmd(0x02);
+    LCD_SendCmd(0x28);
+    LCD_SendCmd(0x0C);
+    LCD_SendCmd(0x06);
+    LCD_Clear();
+}
+
+/* ---------------- Init GPIO, DMA, ADC ---------------- */
+static void MX_GPIO_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Pin = RS_Pin|EN_Pin|D4_Pin|D5_Pin|D6_Pin|D7_Pin;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+static void MX_DMA_Init(void)
+{
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    hdma_adc1.Instance = DMA1_Channel1;
+    hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
+    hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
+    hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
+    hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+    hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+    hdma_adc1.Init.Mode = DMA_CIRCULAR;
+    hdma_adc1.Init.Priority = DMA_PRIORITY_LOW;
+    HAL_DMA_Init(&hdma_adc1);
+    __HAL_LINKDMA(&hadc1,DMA_Handle,hdma_adc1);
+
+    HAL_NVIC_SetPriority(DMA1_Channel1_IRQn,0,0);
+    HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+}
+
+static void MX_ADC1_Init(void)
+{
+    ADC_ChannelConfTypeDef sConfig = {0};
+
+    hadc1.Instance = ADC1;
+    hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+    hadc1.Init.ContinuousConvMode = ENABLE;
+    hadc1.Init.DiscontinuousConvMode = DISABLE;
+    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+    hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+    hadc1.Init.NbrOfConversion = NUM_CHANNELS;
+    HAL_ADC_Init(&hadc1);
+
+    // Kênh 0: PA0
+    sConfig.Channel = ADC_CHANNEL_0;
+    sConfig.Rank = ADC_REGULAR_RANK_1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
+    HAL_ADC_ConfigChannel(&hadc1,&sConfig);
+
+    // Kênh 8: PB0
+    sConfig.Channel = ADC_CHANNEL_8;
+    sConfig.Rank = ADC_REGULAR_RANK_2;
+    HAL_ADC_ConfigChannel(&hadc1,&sConfig);
+}
+
+/* ---------------- System Clock ---------------- */
+void SystemClock_Config(void)
+{
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+    RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+    RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|
+                                  RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2);
+}
+
+/* ---------------- DMA IRQ Handler ---------------- */
+
+/* ---------------- Error Handler ---------------- */
+void Error_Handler(void)
+{
+    while(1){}
+}
